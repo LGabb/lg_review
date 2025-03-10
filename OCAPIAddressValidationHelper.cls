@@ -1,62 +1,41 @@
 /**
  * @author Chris Eager
  * @date 4/6/2020
- * @description Handles OCAPI responses for address validation, parsing them into a generic format for Flow.
+ * @description This class is used to handle the response from OCAPI that return the address JSON and makes it avaliable in the flow
  */
-public with sharing class OCAPIAddressValidationHelper {
-    @InvocableMethod(label='Parse Address Validation Response')
-    public static List<Result> parseValidationResponse(List<Input> jsonInput) {
-        List<Result> returnResults = new List<Result>();
-        AddressValidationProvider__mdt providerConfig = getActiveProviderConfig();
-        if (providerConfig == null) {
-            throw new ValidationException('No active address validation provider configured.');
-        }
-        Map<String, String> fieldMappings = (Map<String, String>) JSON.deserialize(providerConfig.FieldMappings__c, Map<String, String>.class);
 
-        for (Input i : jsonInput) {
+public with sharing class OCAPIAddressValidationHelper {
+
+    /**
+    * @description: This method parses an error returned from Avalara after validating and address and retunrs
+     *                  the error message and suggested address
+    * @param jsonInput - JSON error returned from Avalara
+    * @return List<Result>: List of invocable Result objects
+    */
+    @InvocableMethod
+    public static List<Result> tempMethod(List<Input> jsonInput){
+
+        //List of Result objects to return
+        List<Result> returnResults = new List<Result>();
+
+        //Because this is an InvocableMethod, loop through input List
+        for(input i : jsonInput){
+
             Result r = new Result();
-            if (String.isNotBlank(i.jsonResponse)) {
-                try {
-                    JSONParse addressParse = new JSONParse(i.jsonResponse);
-                    // Fix 1: Use getStringValue() instead of chained get()
-                    r.validationMessage = addressParse.get('fault.arguments.statusMessage').getStringValue();
-                    // Fix 2: Use get() and toStringPretty() for validated address
-                    JSONParse validatedAddressParse = addressParse.get(providerConfig.ValidatedAddressKey__c);
-                    if (validatedAddressParse != null) {
-                        String validatedAddressJson = validatedAddressParse.toStringPretty();
-                        Map<String, Object> providerAddress = (Map<String, Object>) JSON.deserializeUntyped(validatedAddressJson);
-                        ValidatedAddress addr = new ValidatedAddress();
-                        for (String providerField : providerAddress.keySet()) {
-                            String genericField = fieldMappings.get(providerField);
-                            if (genericField != null) {
-                                String value = String.valueOf(providerAddress.get(providerField));
-                                if (genericField == 'line1') addr.line1 = value;
-                                else if (genericField == 'line2') addr.line2 = value;
-                                else if (genericField == 'city') addr.city = value;
-                                else if (genericField == 'state') addr.state = value;
-                                else if (genericField == 'postalCode') addr.postalCode = value;
-                                else if (genericField == 'country') addr.country = value;
-                            }
-                        }
-                        if (providerAddress.containsKey('zip') && fieldMappings.containsKey('zip')) {
-                            String zip = (String) providerAddress.get('zip');
-                            String zip4 = providerAddress.containsKey('zip4') ? (String) providerAddress.get('zip4') : '';
-                            addr.postalCode = zip + (String.isNotBlank(zip4) ? '-' + zip4 : '');
-                        }
-                        if (providerAddress.containsKey('latitude')) {
-                            addr.latitude = providerAddress.get('latitude') instanceof Decimal ? 
-                                            (Decimal) providerAddress.get('latitude') : 
-                                            Decimal.valueOf(String.valueOf(providerAddress.get('latitude')));
-                        }
-                        if (providerAddress.containsKey('longitude')) {
-                            addr.longitude = providerAddress.get('longitude') instanceof Decimal ? 
-                                             (Decimal) providerAddress.get('longitude') : 
-                                             Decimal.valueOf(String.valueOf(providerAddress.get('longitude')));
-                        }
-                        r.validatedAddress = addr;
-                    }
-                } catch (Exception e) {
-                    r.validationMessage = 'Error parsing address validation response: ' + e.getMessage();
+            if(i.jsonResponse != null && i.jsonResponse != ''){
+
+                //Parse the JSON error
+                JSONParse addressParse = new JSONParse(i.jsonResponse);
+
+                //Get the error message to be returned
+                String avaError = addressParse.get('fault.arguments.statusMessage').toStringPretty();
+                r.validationMessage = avaError;
+
+                //Check if there is a suggested Validated Address in the error message
+                if(addressParse.get('fault.arguments.statusDetails').toStringPretty().contains('"Avalara Validated Address"')){
+                    //If there is an address, add it to Results to be returned to the flow
+                    AvalaraAddress address = AvalaraAddress.parse(addressParse.get('fault.arguments.statusDetails.Avalara Validated Address').toStringPretty());
+                    r.avalaraAddresses = address;
                 }
             }
             returnResults.add(r);
@@ -64,24 +43,19 @@ public with sharing class OCAPIAddressValidationHelper {
         return returnResults;
     }
 
-    private static AddressValidationProvider__mdt getActiveProviderConfig() {
-        return [SELECT ValidatedAddressKey__c, FieldMappings__c 
-                FROM AddressValidationProvider__mdt 
-                WHERE Active__c = true 
-                LIMIT 1];
-    }
-
-    public class Input {
-        @InvocableVariable(label='JSON Response')
+    public class Input{
+        //The JSON error returned from Avalara
+        @InvocableVariable
         public String jsonResponse;
     }
 
-    public class Result {
-        @InvocableVariable(label='Validation Message')
+    public class Result{
+        //The specific error from Avalara
+        @InvocableVariable
         public String validationMessage;
-        @InvocableVariable(label='Validated Address')
-        public ValidatedAddress validatedAddress;
-    }
 
-    public class ValidationException extends Exception {}
+        //The suggested address from Avalara
+        @InvocableVariable
+        public AvalaraAddress avalaraAddresses;
+    }
 }
